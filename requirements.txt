@@ -1,5 +1,4 @@
 cmcrameri
-cx_Freeze
 matplotlib
 numpy
 patchelf; sys_platform == 'linux'

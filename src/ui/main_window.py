@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
         self.binary_negative_class = "Negative Class"  # Label for negative class in binary mode
         self.binary_mode_warning_shown = False  # Track if binary mode warning has been shown
         self.force_grayscale = False  # Whether to force grayscale conversion
+        self.cnn_result = None  # Trained CNN model result
         self.init_ui()
     
     def init_ui(self):
@@ -284,6 +285,21 @@ class MainWindow(QMainWindow):
         
         sort_cancel_action = sort_menu.addAction("Cancel Selection")
         sort_cancel_action.triggered.connect(self.cancel_correlation_mode)
+        
+        # Add CNN menu
+        cnn_menu = menubar.addMenu("CNN")
+        
+        cnn_train_action = cnn_menu.addAction("Train on Labeled Images...")
+        cnn_train_action.triggered.connect(self.cnn_train)
+        
+        cnn_menu.addSeparator()
+        
+        cnn_sort_menu = cnn_menu.addMenu("Sort by Confidence")
+        # Populated dynamically when model is trained
+        self._cnn_sort_menu = cnn_sort_menu
+        
+        cnn_suggest_action = cnn_menu.addAction("Suggest Labels for Unlabeled")
+        cnn_suggest_action.triggered.connect(self.cnn_suggest_labels)
         
         # Create central widget
         central_widget = QWidget()
@@ -947,6 +963,225 @@ class MainWindow(QMainWindow):
         
         self.setWindowTitle("Classifier Organizer - Sorted by correlation")
     
+    def cnn_train(self):
+        """Train a ResNet18 CNN on labeled images."""
+        from PyQt5.QtWidgets import QMessageBox, QProgressDialog, QInputDialog
+        
+        try:
+            from src.cnn.trainer import train_model
+        except ImportError:
+            QMessageBox.warning(
+                self, "PyTorch Not Installed",
+                "PyTorch is required for CNN features.\n\n"
+                "Install it with:\n  pip install torch torchvision"
+            )
+            return
+        
+        # Get class names from ontology
+        class_names = self.classification_panel.get_ontology_labels()
+        if len(class_names) < 2:
+            QMessageBox.warning(
+                self, "Not Enough Classes",
+                "At least 2 ontology labels are required to train a CNN."
+            )
+            return
+        
+        # Check we have enough labeled images
+        labels_with_images = set(self.labeled_images.values())
+        classes_with_data = [c for c in class_names if c in labels_with_images]
+        if len(classes_with_data) < 2:
+            QMessageBox.warning(
+                self, "Not Enough Labeled Data",
+                "At least 2 classes need labeled images to train.\n\n"
+                f"Classes with labels: {', '.join(classes_with_data) if classes_with_data else 'none'}"
+            )
+            return
+        
+        num_labeled = len(self.labeled_images)
+        
+        # Determine if we're continuing training
+        resuming = self.cnn_result is not None
+        resume_text = " (continuing from previous)" if resuming else ""
+        
+        # Ask for number of epochs
+        epochs, ok = QInputDialog.getInt(
+            self, "Training Epochs",
+            f"Training{resume_text} on {num_labeled} labeled images across "
+            f"{len(classes_with_data)} classes.\n\nNumber of epochs:",
+            10, 1, 100, 1
+        )
+        if not ok:
+            return
+        
+        # Create progress dialog
+        progress = QProgressDialog("Training CNN...", "Cancel", 0, epochs, self)
+        progress.setWindowTitle("CNN Training")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        
+        cancelled = False
+        
+        def on_progress(epoch, total_epochs, loss, accuracy):
+            nonlocal cancelled
+            if progress.wasCanceled():
+                cancelled = True
+                return False
+            progress.setValue(epoch)
+            progress.setLabelText(
+                f"Training CNN...\n"
+                f"Epoch {epoch}/{total_epochs}\n"
+                f"Loss: {loss:.4f}  Accuracy: {accuracy:.1%}"
+            )
+            # Process events so dialog updates
+            from PyQt5.QtWidgets import QApplication
+            QApplication.processEvents()
+            return True
+        
+        # Get image cache if available
+        image_cache = self.image_grid.image_cache if self.image_grid.image_cache else None
+        
+        # Train
+        result = train_model(
+            labeled_images=self.labeled_images,
+            class_names=class_names,
+            image_cache=image_cache,
+            epochs=epochs,
+            progress_callback=on_progress,
+            resume_from=self.cnn_result,
+        )
+        
+        progress.close()
+        
+        if cancelled or result is None:
+            return
+        
+        self.cnn_result = result
+        
+        # Update the sort-by-confidence submenu with class names
+        self._cnn_sort_menu.clear()
+        for class_name in class_names:
+            action = self._cnn_sort_menu.addAction(class_name)
+            action.triggered.connect(
+                lambda checked, cn=class_name: self.cnn_sort_by_confidence(cn)
+            )
+        
+        QMessageBox.information(
+            self, "Training Complete",
+            f"CNN trained successfully!\n\n"
+            f"Final accuracy: {result.train_accuracy:.1%}\n"
+            f"Epochs: {result.epochs}\n"
+            f"Classes: {', '.join(class_names)}\n\n"
+            f"You can now use 'Sort by Confidence' or 'Suggest Labels' from the CNN menu."
+        )
+    
+    def _cnn_run_inference(self):
+        """Run CNN inference on unlabeled images. Returns PredictionResult or None."""
+        from PyQt5.QtWidgets import QMessageBox, QProgressDialog
+        
+        if self.cnn_result is None:
+            QMessageBox.warning(
+                self, "No Trained Model",
+                "Train a CNN first using CNN → Train on Labeled Images."
+            )
+            return None
+        
+        from src.cnn.inference import run_inference
+        
+        # Get unlabeled images
+        all_images = self.controller.get_images()
+        unlabeled_images = [img for img in all_images
+                           if str(img) not in self.labeled_images]
+        
+        if not unlabeled_images:
+            QMessageBox.information(self, "No Unlabeled Images",
+                                   "All images are already labeled.")
+            return None
+        
+        # Create progress dialog
+        progress = QProgressDialog("Running CNN inference...", "Cancel",
+                                   0, len(unlabeled_images), self)
+        progress.setWindowTitle("CNN Inference")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        
+        cancelled = False
+        
+        def on_progress(processed, total):
+            nonlocal cancelled
+            if progress.wasCanceled():
+                cancelled = True
+                return False
+            progress.setValue(processed)
+            progress.setLabelText(
+                f"Running CNN inference...\n"
+                f"Processed {processed}/{total} images"
+            )
+            from PyQt5.QtWidgets import QApplication
+            QApplication.processEvents()
+            return True
+        
+        image_cache = self.image_grid.image_cache if self.image_grid.image_cache else None
+        
+        prediction = run_inference(
+            training_result=self.cnn_result,
+            image_paths=unlabeled_images,
+            image_cache=image_cache,
+            progress_callback=on_progress,
+        )
+        
+        progress.close()
+        
+        if cancelled or prediction is None:
+            return None
+        
+        return prediction
+    
+    def cnn_sort_by_confidence(self, class_name: str):
+        """Sort unlabeled images by CNN confidence for a given class."""
+        prediction = self._cnn_run_inference()
+        if prediction is None:
+            return
+        
+        sorted_items = prediction.sort_by_class_confidence(class_name)
+        sorted_paths = [path for path, _ in sorted_items]
+        
+        self.custom_sort_order = sorted_paths
+        self.display_images_with_custom_order(sorted_paths)
+        self.setWindowTitle(
+            f"Classifier Organizer - Sorted by CNN confidence ({class_name})"
+        )
+    
+    def cnn_suggest_labels(self):
+        """Suggest labels for all unlabeled images using the trained CNN."""
+        from PyQt5.QtWidgets import QMessageBox
+        
+        prediction = self._cnn_run_inference()
+        if prediction is None:
+            return
+        
+        suggested = prediction.get_suggested_labels()
+        
+        # Apply suggested labels
+        count = 0
+        for path_str, label in suggested.items():
+            if path_str not in self.labeled_images:
+                self.labeled_images[path_str] = label
+                count += 1
+        
+        # Refresh display
+        if self.custom_sort_order:
+            self.display_images_with_custom_order(self.custom_sort_order)
+        else:
+            self.display_images()
+        
+        QMessageBox.information(
+            self, "Labels Suggested",
+            f"Applied CNN-suggested labels to {count} images.\n\n"
+            f"Review the labels and correct any mistakes."
+        )
+
     def display_images_with_custom_order(self, unlabeled_order: list):
         """Display images with a custom order for unlabeled images."""
         self.unlabeled_list.clear()
