@@ -38,21 +38,45 @@ def create_thumbnail(image_path: Path, size: tuple[int, int] = (100, 100), color
         
         # Determine if grayscale conversion is needed:
         # - force_grayscale setting is on
-        # - A transform is being applied (transforms require grayscale)
         # - A non-gray colormap is being applied (colormaps require grayscale)
-        needs_grayscale = force_grayscale or transform != "none" or colormap != "gray"
+        needs_grayscale = force_grayscale or colormap != "gray"
+        
+        # Track whether the image is natively color for color-preserving transforms
+        is_color = img.mode in ('RGB', 'RGBA')
         
         if needs_grayscale and img.mode != 'L':
             img = img.convert('L')
+            is_color = False
         elif img.mode not in ('L', 'RGB', 'RGBA'):
             # Convert exotic modes (CMYK, etc.) to RGB for display
             img = img.convert('RGB')
+            is_color = True
         
-        # Apply transformation if specified (requires grayscale)
+        # Apply transformation if specified
         if transform != "none":
-            img_array = np.array(img)
-            img_array = apply_transform(img_array, transform)
-            img = Image.fromarray(img_array, 'L')
+            if is_color and colormap == "gray":
+                # Preserve color: apply transform to V channel of HSV
+                has_alpha = img.mode == 'RGBA'
+                alpha = None
+                if has_alpha:
+                    alpha = img.split()[3]
+                    img = img.convert('RGB')
+                
+                hsv = img.convert('HSV')
+                h, s, v = hsv.split()
+                
+                v_array = np.array(v)
+                v_array = apply_transform(v_array, transform)
+                v_transformed = Image.fromarray(v_array, 'L')
+                
+                img = Image.merge('HSV', (h, s, v_transformed)).convert('RGB')
+                if has_alpha:
+                    img.putalpha(alpha)
+            else:
+                # Grayscale path
+                img_array = np.array(img)
+                img_array = apply_transform(img_array, transform)
+                img = Image.fromarray(img_array, 'L')
         
         # Apply colormap if not gray (requires grayscale)
         if colormap != "gray":
