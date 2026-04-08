@@ -46,6 +46,7 @@ class ImageGridWidget(QWidget):
         self.correlation_mode = False  # Whether we're in correlation base image selection mode
         self.thread_count = 8  # Number of threads for parallel processing
         self.image_cache = {}  # Cache for preloaded images {path: PIL.Image}
+        self.force_grayscale = False  # Whether to force grayscale conversion
         self.init_ui()
     
     def init_ui(self):
@@ -111,6 +112,10 @@ class ImageGridWidget(QWidget):
     def set_thread_count(self, count: int):
         """Set the number of threads for parallel processing."""
         self.thread_count = max(1, min(32, count))  # Clamp between 1 and 32
+    
+    def set_force_grayscale(self, enabled: bool):
+        """Set whether to force grayscale conversion."""
+        self.force_grayscale = enabled
     
     def set_grid_size(self, cols: int, rows: int):
         """Update the grid size."""
@@ -185,7 +190,8 @@ class ImageGridWidget(QWidget):
                     size=(self.image_size, self.image_size), 
                     colormap=self.colormap, 
                     transform=self.transform,
-                    cached_image=cached_img
+                    cached_image=cached_img,
+                    force_grayscale=self.force_grayscale
                 )
                 return idx, img_path, pixmap
             return idx, img_path, None

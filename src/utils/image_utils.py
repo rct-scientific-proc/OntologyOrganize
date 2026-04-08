@@ -14,7 +14,7 @@ from skimage.measure import ransac
 from skimage.transform import AffineTransform
 
 
-def create_thumbnail(image_path: Path, size: tuple[int, int] = (100, 100), colormap: str = "gray", transform: str = "none", cached_image: Image.Image = None) -> QPixmap | None:
+def create_thumbnail(image_path: Path, size: tuple[int, int] = (100, 100), colormap: str = "gray", transform: str = "none", cached_image: Image.Image = None, force_grayscale: bool = False) -> QPixmap | None:
     """
     Create a thumbnail QPixmap from an image file or cached image.
     
@@ -24,6 +24,7 @@ def create_thumbnail(image_path: Path, size: tuple[int, int] = (100, 100), color
         colormap: Colormap to apply (default: "gray")
         transform: Image transformation to apply (default: "none")
         cached_image: Optional pre-loaded PIL Image to use instead of loading from disk
+        force_grayscale: Whether to force conversion to grayscale (default: False)
         
     Returns:
         QPixmap thumbnail or None if error
@@ -35,19 +36,25 @@ def create_thumbnail(image_path: Path, size: tuple[int, int] = (100, 100), color
         else:
             img = Image.open(image_path)
         
-        # Always convert to grayscale if image has multiple channels
-        # Handles RGB, RGBA, CMYK, and other multi-channel formats
-        if img.mode != 'L':
-            print(f"Converting {image_path.name} from {img.mode} to grayscale")
-            img = img.convert('L')
+        # Determine if grayscale conversion is needed:
+        # - force_grayscale setting is on
+        # - A transform is being applied (transforms require grayscale)
+        # - A non-gray colormap is being applied (colormaps require grayscale)
+        needs_grayscale = force_grayscale or transform != "none" or colormap != "gray"
         
-        # Apply transformation if specified
+        if needs_grayscale and img.mode != 'L':
+            img = img.convert('L')
+        elif img.mode not in ('L', 'RGB', 'RGBA'):
+            # Convert exotic modes (CMYK, etc.) to RGB for display
+            img = img.convert('RGB')
+        
+        # Apply transformation if specified (requires grayscale)
         if transform != "none":
             img_array = np.array(img)
             img_array = apply_transform(img_array, transform)
             img = Image.fromarray(img_array, 'L')
         
-        # Apply colormap if not gray
+        # Apply colormap if not gray (requires grayscale)
         if colormap != "gray":
             img_array = np.array(img)
             img = apply_colormap(img_array, colormap)

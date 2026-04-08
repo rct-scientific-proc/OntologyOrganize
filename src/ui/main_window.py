@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
         self.binary_positive_class = "Positive Class"  # Label for positive class in binary mode
         self.binary_negative_class = "Negative Class"  # Label for negative class in binary mode
         self.binary_mode_warning_shown = False  # Track if binary mode warning has been shown
+        self.force_grayscale = False  # Whether to force grayscale conversion
         self.init_ui()
     
     def init_ui(self):
@@ -85,6 +86,12 @@ class MainWindow(QMainWindow):
         self.preload_images_action.setCheckable(True)
         self.preload_images_action.setChecked(self.preload_images)
         self.preload_images_action.triggered.connect(self.toggle_preload_images)
+        
+        # Add force grayscale setting
+        self.force_grayscale_action = settings_menu.addAction("Force Grayscale")
+        self.force_grayscale_action.setCheckable(True)
+        self.force_grayscale_action.setChecked(self.force_grayscale)
+        self.force_grayscale_action.triggered.connect(self.toggle_force_grayscale)
         
         # Add View menu
         view_menu = menubar.addMenu("View")
@@ -611,6 +618,12 @@ class MainWindow(QMainWindow):
             # Clear preloaded images
             self.image_grid.clear_preloaded_images()
             print("Preloaded images cleared from memory.")
+    
+    def toggle_force_grayscale(self):
+        """Toggle forcing grayscale conversion for all images."""
+        self.force_grayscale = self.force_grayscale_action.isChecked()
+        self.image_grid.set_force_grayscale(self.force_grayscale)
+        self.image_grid.load_page(self.image_grid.current_page)
     
     def open_colormap_dialog(self):
         """Open the colormap settings dialog."""
@@ -1187,6 +1200,7 @@ class MainWindow(QMainWindow):
                 "current_page": self.image_grid.current_page,
                 "thread_count": self.thread_count,
                 "preload_images": self.preload_images,
+                "force_grayscale": self.force_grayscale,
                 "custom_sort_order": [str(img).replace('\\', '/') for img in self.custom_sort_order] if self.custom_sort_order else None,
                 "base_image_for_correlation": str(self.base_image_for_correlation).replace('\\', '/') if self.base_image_for_correlation else None,
                 "correlation_method": self.correlation_method,
@@ -1229,6 +1243,7 @@ class MainWindow(QMainWindow):
                 "current_page": self.image_grid.current_page,
                 "thread_count": self.thread_count,
                 "preload_images": self.preload_images,
+                "force_grayscale": self.force_grayscale,
                 "custom_sort_order": [str(img).replace('\\', '/') for img in self.custom_sort_order] if self.custom_sort_order else None,
                 "base_image_for_correlation": str(self.base_image_for_correlation).replace('\\', '/') if self.base_image_for_correlation else None,
                 "correlation_method": self.correlation_method,
@@ -1297,6 +1312,12 @@ class MainWindow(QMainWindow):
             self.preload_images = state_data.get("preload_images", False)
             if hasattr(self, 'preload_images_action'):
                 self.preload_images_action.setChecked(self.preload_images)
+            
+            # Restore force grayscale setting
+            self.force_grayscale = state_data.get("force_grayscale", False)
+            if hasattr(self, 'force_grayscale_action'):
+                self.force_grayscale_action.setChecked(self.force_grayscale)
+            self.image_grid.set_force_grayscale(self.force_grayscale)
             
             # Restore binary mode settings
             self.binary_mode = state_data.get("binary_mode", False)

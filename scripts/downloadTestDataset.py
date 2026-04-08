@@ -1,7 +1,9 @@
-"""Download all MNIST digit images for testing multithreading."""
+"""Download MNIST digit images and CIFAR-10 color images for testing."""
 
 import gzip
 import urllib.request
+import tarfile
+import pickle
 from pathlib import Path
 import numpy as np
 from PIL import Image
@@ -135,19 +137,121 @@ def download_mnist_images(output_dir: str, num_images: int = None):
     return True
 
 
+def download_cifar10_images(output_dir: str, num_images: int = None):
+    """
+    Download and save CIFAR-10 color images.
+    
+    Args:
+        output_dir: Directory to save images
+        num_images: Number of images to download (default: None = all images)
+    """
+    print(f"\nDownloading {'all' if num_images is None else num_images} CIFAR-10 images...")
+    
+    # CIFAR-10 class names
+    class_names = [
+        'airplane', 'automobile', 'bird', 'cat', 'deer',
+        'dog', 'frog', 'horse', 'ship', 'truck'
+    ]
+    
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Create temp directory for downloaded files
+    temp_dir = output_path.parent / "temp"
+    temp_dir.mkdir(exist_ok=True)
+    
+    try:
+        # Download CIFAR-10 tarball
+        url = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
+        tar_path = temp_dir / "cifar-10-python.tar.gz"
+        
+        if not tar_path.exists():
+            print("Downloading CIFAR-10 dataset...")
+            download_file(url, tar_path)
+        
+        # Extract tarball
+        print("Extracting CIFAR-10 data...")
+        with tarfile.open(tar_path, 'r:gz') as tar:
+            tar.extractall(temp_dir, filter='data')
+        
+        cifar_dir = temp_dir / "cifar-10-batches-py"
+        
+        # Load all data batches
+        all_images = []
+        all_labels = []
+        
+        batch_files = [f"data_batch_{i}" for i in range(1, 6)] + ["test_batch"]
+        for batch_file in batch_files:
+            batch_path = cifar_dir / batch_file
+            with open(batch_path, 'rb') as f:
+                batch = pickle.load(f, encoding='bytes')
+            all_images.append(batch[b'data'])
+            all_labels.extend(batch[b'labels'])
+        
+        # Combine all batches
+        all_images = np.concatenate(all_images)
+        all_labels = np.array(all_labels)
+        
+        # Reshape: (N, 3072) -> (N, 3, 32, 32) -> (N, 32, 32, 3)
+        all_images = all_images.reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
+        
+        # Take only the requested number if specified
+        if num_images is not None:
+            all_images = all_images[:num_images]
+            all_labels = all_labels[:num_images]
+        
+        total_images = len(all_images)
+        
+        # Save images
+        print(f"Saving {total_images} images (scaling to 64x64)...")
+        for idx, (image, label) in enumerate(zip(all_images, all_labels)):
+            # Convert to PIL Image (already RGB)
+            img = Image.fromarray(image, mode='RGB')
+            
+            # Scale up using bilinear interpolation (32x32 -> 64x64)
+            img = img.resize((64, 64), Image.BILINEAR)
+            
+            # Save with label in filename: cifar10_0001_cat.png
+            class_name = class_names[label]
+            filename = f"cifar10_{idx:05d}_{class_name}.png"
+            filepath = output_path / filename
+            img.save(filepath)
+            
+            if (idx + 1) % 1000 == 0:
+                print(f"  Saved {idx + 1}/{total_images} images...")
+        
+        # Clean up temp files
+        print("Cleaning up temporary files...")
+        import shutil
+        shutil.rmtree(temp_dir)
+        
+        print(f"Successfully saved {total_images} images to {output_dir}")
+        
+    except Exception as e:
+        print(f"Error downloading CIFAR-10 dataset: {e}")
+        return False
+    
+    return True
+
+
 def main():
     """Main entry point."""
-    # Set output directory
     project_root = Path(__file__).parent.parent
-    output_dir = project_root / "data" / "mnist" / "images"
     
-    # Download all MNIST images (70,000 total: 60,000 training + 10,000 test)
-    # Pass None or omit num_images parameter to download all images
-    success = download_mnist_images(str(output_dir))
+    # Download MNIST (grayscale)
+    #mnist_dir = project_root / "data" / "mnist" / "images"
+    #success = download_mnist_images(str(mnist_dir))
+    #if success:
+    #    print(f"\nMNIST images are ready in: {mnist_dir}")
+    #    print(f"Total files: {len(list(mnist_dir.glob('*.png')))}")
     
+    # Download CIFAR-10 (color)
+    cifar_dir = project_root / "data" / "cifar10" / "images"
+    success = download_cifar10_images(str(cifar_dir))
     if success:
-        print(f"\nImages are ready in: {output_dir}")
-        print(f"Total files: {len(list(output_dir.glob('*.png')))}")
+        print(f"\nCIFAR-10 images are ready in: {cifar_dir}")
+        print(f"Total files: {len(list(cifar_dir.glob('*.png')))}")
 
 
 if __name__ == "__main__":
