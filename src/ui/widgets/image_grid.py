@@ -423,10 +423,10 @@ class ImageGridWidget(QWidget):
                 return False
             
             try:
-                # Load image and convert to grayscale
+                # Load image and normalize if needed (e.g. float32 TIFFs)
+                from src.utils.image_utils import normalize_image
                 with Image.open(img_path) as img:
-                    if img.mode != 'L':
-                        img = img.convert('L')
+                    img = normalize_image(img)
                     
                     # Force load image data into memory and close file handle
                     img.load()

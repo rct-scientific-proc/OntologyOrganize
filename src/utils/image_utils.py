@@ -14,6 +14,35 @@ from skimage.measure import ransac
 from skimage.transform import AffineTransform
 
 
+def normalize_image(img: Image.Image) -> Image.Image:
+    """
+    Normalize a non-8-bit image to 8-bit using min-max normalization.
+    
+    Handles float32 TIFFs (mode 'F'), int32 TIFFs (mode 'I'), and other
+    non-standard bit depths by scaling pixel values to the [0, 255] range.
+    Standard 8-bit images (modes 'L', 'RGB', 'RGBA', etc.) pass through unchanged.
+    
+    Args:
+        img: PIL Image in any mode
+        
+    Returns:
+        PIL Image normalized to 8-bit ('L' for single-channel, 'RGB' for multi-channel)
+    """
+    if img.mode not in ('F', 'I', 'I;16'):
+        return img
+    
+    arr = np.array(img, dtype=np.float64)
+    min_val = arr.min()
+    max_val = arr.max()
+    
+    if max_val - min_val > 0:
+        normalized = ((arr - min_val) / (max_val - min_val) * 255.0)
+    else:
+        normalized = np.zeros_like(arr)
+    
+    return Image.fromarray(normalized.astype(np.uint8), 'L')
+
+
 def create_thumbnail(image_path: Path, size: tuple[int, int] = (100, 100), colormap: str = "gray", transform: str = "none", cached_image: Image.Image = None, force_grayscale: bool = False) -> QPixmap | None:
     """
     Create a thumbnail QPixmap from an image file or cached image.
@@ -35,6 +64,9 @@ def create_thumbnail(image_path: Path, size: tuple[int, int] = (100, 100), color
             img = cached_image.copy()  # Make a copy to avoid modifying cached version
         else:
             img = Image.open(image_path)
+        
+        # Normalize non-8-bit images (float32/int32 TIFFs) to 0-255
+        img = normalize_image(img)
         
         # Determine if grayscale conversion is needed:
         # - force_grayscale setting is on
@@ -141,11 +173,17 @@ def apply_colormap(gray_image: np.ndarray, colormap_name: str) -> Image.Image:
             # Fall back to matplotlib colormaps
             cmap = plt.get_cmap(colormap_name)
         
-        # Normalize image to 0-1 range
-        normalized = gray_image.astype(np.float32) / 255.0
+        # Normalize image to 0-1 range using min-max normalization
+        arr_float = gray_image.astype(np.float64)
+        min_val = arr_float.min()
+        max_val = arr_float.max()
+        if max_val - min_val > 0:
+            normalized = (arr_float - min_val) / (max_val - min_val)
+        else:
+            normalized = np.zeros_like(arr_float)
         
         # Apply colormap
-        colored = cmap(normalized)
+        colored = cmap(normalized.astype(np.float32))
         
         # Convert to 0-255 RGB
         rgb = (colored[:, :, :3] * 255).astype(np.uint8)
@@ -177,6 +215,8 @@ def _load_image(img_path: Path, image_cache: dict = None) -> Image.Image:
     
     # Load from disk
     img = Image.open(img_path)
+    # Normalize non-8-bit images (float32/int32 TIFFs) to 0-255
+    img = normalize_image(img)
     if img.mode != 'L':
         img = img.convert('L')
     return img
