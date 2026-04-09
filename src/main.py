@@ -1,6 +1,13 @@
 """Application entry point."""
 
 import sys
+
+# Import torch before PyQt5 to avoid DLL conflicts on Windows
+try:
+    import torch
+except ImportError:
+    pass
+
 from PyQt5.QtWidgets import QApplication
 from src.ui.main_window import MainWindow
 
