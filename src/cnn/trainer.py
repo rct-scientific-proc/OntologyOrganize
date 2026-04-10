@@ -22,6 +22,61 @@ class TrainingResult:
         self.train_accuracy = train_accuracy
         self.epochs = epochs
 
+    def save(self, path: str | Path) -> Path:
+        """Save model and metadata to a .pth file.
+
+        Args:
+            path: File path to save to (will add .pth if missing)
+
+        Returns:
+            The resolved Path the file was written to
+        """
+        path = Path(path)
+        if path.suffix != '.pth':
+            path = path.with_suffix('.pth')
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'class_names': self.class_names,
+            'train_accuracy': self.train_accuracy,
+            'epochs': self.epochs,
+            'num_classes': len(self.class_names),
+        }, path)
+        print(f"CNN: Model saved to {path}")
+        return path
+
+    @classmethod
+    def load(cls, path: str | Path) -> 'TrainingResult':
+        """Load a saved model from a .pth file.
+
+        Args:
+            path: Path to the saved .pth file
+
+        Returns:
+            Restored TrainingResult ready for inference
+        """
+        from src.cnn.model import create_model
+
+        path = Path(path)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+
+        num_classes = checkpoint['num_classes']
+        class_names = checkpoint['class_names']
+
+        model = create_model(num_classes, device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+
+        result = cls(
+            model=model,
+            class_names=class_names,
+            device=device,
+            train_accuracy=checkpoint.get('train_accuracy', 0.0),
+            epochs=checkpoint.get('epochs', 0),
+        )
+        print(f"CNN: Model loaded from {path}")
+        return result
+
 
 def train_model(
     labeled_images: dict[str, str],

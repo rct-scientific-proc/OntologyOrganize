@@ -248,7 +248,7 @@ def main():
     
     # Download CIFAR-10 (color)
     cifar_dir = project_root / "data" / "cifar10" / "images"
-    success = download_cifar10_images(str(cifar_dir))
+    success = download_cifar10_images(str(cifar_dir), num_images=10000)
     if success:
         print(f"\nCIFAR-10 images are ready in: {cifar_dir}")
         print(f"Total files: {len(list(cifar_dir.glob('*.png')))}")

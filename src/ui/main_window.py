@@ -3,7 +3,8 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QFileDialog, QListWidget,
-    QListWidgetItem, QSplitter, QPushButton, QScrollArea, QProgressDialog
+    QListWidgetItem, QSplitter, QPushButton, QScrollArea, QProgressDialog,
+    QWidgetAction, QComboBox
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QWheelEvent
@@ -48,6 +49,10 @@ class MainWindow(QMainWindow):
         self.binary_mode_warning_shown = False  # Track if binary mode warning has been shown
         self.force_grayscale = False  # Whether to force grayscale conversion
         self.cnn_result = None  # Trained CNN model result
+        self.cnn_model_path = None  # Path to last saved CNN model
+        self.cnn_prediction = None  # Cached inference results
+        self.train_batch_size = 16  # Training batch size
+        self.inference_batch_size = 32  # Inference batch size
         self.init_ui()
     
     def init_ui(self):
@@ -294,12 +299,45 @@ class MainWindow(QMainWindow):
         
         cnn_menu.addSeparator()
         
+        # Train Batch Size dropdown
+        train_batch_widget = QWidget()
+        train_batch_layout = QHBoxLayout(train_batch_widget)
+        train_batch_layout.setContentsMargins(8, 2, 8, 2)
+        train_batch_layout.addWidget(QLabel("Train Batch:"))
+        self._train_batch_combo = QComboBox()
+        self._train_batch_combo.setEditable(True)
+        batch_options = ["1", "2", "4", "8", "16", "32", "64", "128", "256", "512"]
+        self._train_batch_combo.addItems(batch_options)
+        self._train_batch_combo.setCurrentText(str(self.train_batch_size))
+        self._train_batch_combo.currentTextChanged.connect(self._on_train_batch_changed)
+        train_batch_layout.addWidget(self._train_batch_combo)
+        train_batch_action = QWidgetAction(self)
+        train_batch_action.setDefaultWidget(train_batch_widget)
+        cnn_menu.addAction(train_batch_action)
+        
+        # Inference Batch Size dropdown
+        infer_batch_widget = QWidget()
+        infer_batch_layout = QHBoxLayout(infer_batch_widget)
+        infer_batch_layout.setContentsMargins(8, 2, 8, 2)
+        infer_batch_layout.addWidget(QLabel("Inference Batch:"))
+        self._infer_batch_combo = QComboBox()
+        self._infer_batch_combo.setEditable(True)
+        self._infer_batch_combo.addItems(batch_options)
+        self._infer_batch_combo.setCurrentText(str(self.inference_batch_size))
+        self._infer_batch_combo.currentTextChanged.connect(self._on_infer_batch_changed)
+        infer_batch_layout.addWidget(self._infer_batch_combo)
+        infer_batch_action = QWidgetAction(self)
+        infer_batch_action.setDefaultWidget(infer_batch_widget)
+        cnn_menu.addAction(infer_batch_action)
+        
+        cnn_menu.addSeparator()
+        
+        cnn_run_inference_action = cnn_menu.addAction("Run Inference")
+        cnn_run_inference_action.triggered.connect(self.cnn_run_inference_action)
+        
         cnn_sort_menu = cnn_menu.addMenu("Sort by Confidence")
         # Populated dynamically when model is trained
         self._cnn_sort_menu = cnn_sort_menu
-        
-        cnn_suggest_action = cnn_menu.addAction("Suggest Labels for Unlabeled")
-        cnn_suggest_action.triggered.connect(self.cnn_suggest_labels)
         
         # Create central widget
         central_widget = QWidget()
@@ -963,6 +1001,24 @@ class MainWindow(QMainWindow):
         
         self.setWindowTitle("Classifier Organizer - Sorted by correlation")
     
+    def _on_train_batch_changed(self, text):
+        """Update train batch size from combo box."""
+        try:
+            value = int(text)
+            if value > 0:
+                self.train_batch_size = value
+        except ValueError:
+            pass
+    
+    def _on_infer_batch_changed(self, text):
+        """Update inference batch size from combo box."""
+        try:
+            value = int(text)
+            if value > 0:
+                self.inference_batch_size = value
+        except ValueError:
+            pass
+    
     def cnn_train(self):
         """Train a ResNet18 CNN on labeled images."""
         from PyQt5.QtWidgets import QMessageBox, QProgressDialog, QInputDialog
@@ -1047,6 +1103,7 @@ class MainWindow(QMainWindow):
             class_names=class_names,
             image_cache=image_cache,
             epochs=epochs,
+            batch_size=self.train_batch_size,
             progress_callback=on_progress,
             resume_from=self.cnn_result,
         )
@@ -1057,6 +1114,18 @@ class MainWindow(QMainWindow):
             return
         
         self.cnn_result = result
+        self.cnn_prediction = None  # Clear cached inference (model changed)
+        
+        # Auto-save model next to the image folder
+        try:
+            current_folder = self.controller.get_current_folder()
+            if current_folder:
+                model_path = Path(current_folder).parent / "cnn_model.pth"
+            else:
+                model_path = Path("cnn_model.pth")
+            self.cnn_model_path = str(result.save(model_path))
+        except Exception as e:
+            print(f"WARNING: Failed to auto-save CNN model: {e}")
         
         # Update the sort-by-confidence submenu with class names
         self._cnn_sort_menu.clear()
@@ -1076,8 +1145,8 @@ class MainWindow(QMainWindow):
         )
     
     def _cnn_run_inference(self):
-        """Run CNN inference on unlabeled images. Returns PredictionResult or None."""
-        from PyQt5.QtWidgets import QMessageBox, QProgressDialog, QInputDialog
+        """Run CNN inference on unlabeled images, caching the result."""
+        from PyQt5.QtWidgets import QMessageBox, QProgressDialog
         
         if self.cnn_result is None:
             QMessageBox.warning(
@@ -1098,15 +1167,7 @@ class MainWindow(QMainWindow):
                                    "All images are already labeled.")
             return None
         
-        # Ask for batch size
-        batch_size, ok = QInputDialog.getInt(
-            self, "Inference Batch Size",
-            f"Running inference on {len(unlabeled_images)} unlabeled images.\n\n"
-            "Batch size (lower = less memory, higher = faster):",
-            32, 1, 512, 1
-        )
-        if not ok:
-            return None
+        batch_size = self.inference_batch_size
         
         # Create progress dialog
         progress = QProgressDialog("Running CNN inference...", "Cancel",
@@ -1147,15 +1208,34 @@ class MainWindow(QMainWindow):
         if cancelled or prediction is None:
             return None
         
+        self.cnn_prediction = prediction
         return prediction
+    
+    def cnn_run_inference_action(self):
+        """Menu action to explicitly run inference and cache results."""
+        from PyQt5.QtWidgets import QMessageBox
+        
+        prediction = self._cnn_run_inference()
+        if prediction is not None:
+            count = len(prediction.predictions)
+            QMessageBox.information(
+                self, "Inference Complete",
+                f"Inference finished on {count} unlabeled images.\n\n"
+                f"You can now use 'Sort by Confidence' or 'Suggest Labels' "
+                f"without re-running inference."
+            )
     
     def cnn_sort_by_confidence(self, class_name: str):
         """Sort unlabeled images by CNN confidence for a given class."""
-        prediction = self._cnn_run_inference()
-        if prediction is None:
+        if self.cnn_prediction is None:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, "No Inference Results",
+                "Run inference first using CNN \u2192 Run Inference."
+            )
             return
         
-        sorted_items = prediction.sort_by_class_confidence(class_name)
+        sorted_items = self.cnn_prediction.sort_by_class_confidence(class_name)
         sorted_paths = [path for path, _ in sorted_items]
         
         self.custom_sort_order = sorted_paths
@@ -1164,35 +1244,6 @@ class MainWindow(QMainWindow):
             f"Classifier Organizer - Sorted by CNN confidence ({class_name})"
         )
     
-    def cnn_suggest_labels(self):
-        """Suggest labels for all unlabeled images using the trained CNN."""
-        from PyQt5.QtWidgets import QMessageBox
-        
-        prediction = self._cnn_run_inference()
-        if prediction is None:
-            return
-        
-        suggested = prediction.get_suggested_labels()
-        
-        # Apply suggested labels
-        count = 0
-        for path_str, label in suggested.items():
-            if path_str not in self.labeled_images:
-                self.labeled_images[path_str] = label
-                count += 1
-        
-        # Refresh display
-        if self.custom_sort_order:
-            self.display_images_with_custom_order(self.custom_sort_order)
-        else:
-            self.display_images()
-        
-        QMessageBox.information(
-            self, "Labels Suggested",
-            f"Applied CNN-suggested labels to {count} images.\n\n"
-            f"Review the labels and correct any mistakes."
-        )
-
     def display_images_with_custom_order(self, unlabeled_order: list):
         """Display images with a custom order for unlabeled images."""
         self.unlabeled_list.clear()
@@ -1452,7 +1503,8 @@ class MainWindow(QMainWindow):
                 "correlation_method": self.correlation_method,
                 "binary_mode": self.binary_mode,
                 "binary_positive_class": self.binary_positive_class,
-                "binary_negative_class": self.binary_negative_class
+                "binary_negative_class": self.binary_negative_class,
+                "cnn_model_path": self.cnn_model_path.replace('\\', '/') if self.cnn_model_path else None
             }
             
             # Save using progress manager
@@ -1495,7 +1547,8 @@ class MainWindow(QMainWindow):
                 "correlation_method": self.correlation_method,
                 "binary_mode": self.binary_mode,
                 "binary_positive_class": self.binary_positive_class,
-                "binary_negative_class": self.binary_negative_class
+                "binary_negative_class": self.binary_negative_class,
+                "cnn_model_path": self.cnn_model_path.replace('\\', '/') if self.cnn_model_path else None
             }
             
             # Quick save using progress manager
@@ -1525,7 +1578,8 @@ class MainWindow(QMainWindow):
             # Restore labeled images and label colors with validation
             loaded_labeled_images = state_data.get("labeled_images", {})
             if isinstance(loaded_labeled_images, dict):
-                self.labeled_images = loaded_labeled_images
+                # Normalize paths to OS-native format (saved with forward slashes)
+                self.labeled_images = {str(Path(k)): v for k, v in loaded_labeled_images.items()}
             else:
                 print("WARNING: Invalid labeled_images format, using empty dict")
                 self.labeled_images = {}
@@ -1597,6 +1651,28 @@ class MainWindow(QMainWindow):
             
             # Apply binary mode to classification panel
             self.update_classification_panel_mode()
+            
+            # Restore CNN model if available
+            saved_cnn_path = state_data.get("cnn_model_path", None)
+            if saved_cnn_path:
+                cnn_path = Path(saved_cnn_path)
+                if cnn_path.exists():
+                    try:
+                        from src.cnn.trainer import TrainingResult
+                        self.cnn_result = TrainingResult.load(cnn_path)
+                        self.cnn_model_path = str(cnn_path)
+                        # Populate sort-by-confidence menu
+                        self._cnn_sort_menu.clear()
+                        for class_name in self.cnn_result.class_names:
+                            action = self._cnn_sort_menu.addAction(class_name)
+                            action.triggered.connect(
+                                lambda checked, cn=class_name: self.cnn_sort_by_confidence(cn)
+                            )
+                        print(f"DEBUG: Restored CNN model from {cnn_path}")
+                    except Exception as e:
+                        print(f"WARNING: Failed to load CNN model: {e}")
+                else:
+                    print(f"WARNING: Saved CNN model path does not exist: {saved_cnn_path}")
             
             # Restore current folder and load images if available
             current_folder = state_data.get("current_folder", None)
