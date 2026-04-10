@@ -59,7 +59,7 @@ class LabeledImageDataset(Dataset):
         # Try cache first, then load from disk
         cached = self.image_cache.get(str(img_path))
         if cached is not None:
-            img = cached.copy()
+            img = cached
         else:
             img = Image.open(img_path)
 
@@ -92,7 +92,7 @@ class UnlabeledImageDataset(Dataset):
 
         cached = self.image_cache.get(str(img_path))
         if cached is not None:
-            img = cached.copy()
+            img = cached
         else:
             img = Image.open(img_path)
 

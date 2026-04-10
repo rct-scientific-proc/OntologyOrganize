@@ -71,8 +71,10 @@ def train_model(
 
     # Create dataset and dataloader
     dataset = LabeledImageDataset(image_paths, labels, image_cache=image_cache)
+    # Use multi-worker loading when no cache (PIL images aren't picklable)
+    workers = 0
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                            num_workers=0, pin_memory=torch.cuda.is_available())
+                            num_workers=workers, pin_memory=torch.cuda.is_available())
 
     # Create or resume model
     if resume_from is not None:

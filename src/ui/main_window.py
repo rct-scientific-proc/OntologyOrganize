@@ -1077,7 +1077,7 @@ class MainWindow(QMainWindow):
     
     def _cnn_run_inference(self):
         """Run CNN inference on unlabeled images. Returns PredictionResult or None."""
-        from PyQt5.QtWidgets import QMessageBox, QProgressDialog
+        from PyQt5.QtWidgets import QMessageBox, QProgressDialog, QInputDialog
         
         if self.cnn_result is None:
             QMessageBox.warning(
@@ -1096,6 +1096,16 @@ class MainWindow(QMainWindow):
         if not unlabeled_images:
             QMessageBox.information(self, "No Unlabeled Images",
                                    "All images are already labeled.")
+            return None
+        
+        # Ask for batch size
+        batch_size, ok = QInputDialog.getInt(
+            self, "Inference Batch Size",
+            f"Running inference on {len(unlabeled_images)} unlabeled images.\n\n"
+            "Batch size (lower = less memory, higher = faster):",
+            32, 1, 512, 1
+        )
+        if not ok:
             return None
         
         # Create progress dialog
@@ -1128,6 +1138,7 @@ class MainWindow(QMainWindow):
             training_result=self.cnn_result,
             image_paths=unlabeled_images,
             image_cache=image_cache,
+            batch_size=batch_size,
             progress_callback=on_progress,
         )
         

@@ -80,8 +80,10 @@ def run_inference(
     device = training_result.device
 
     dataset = UnlabeledImageDataset(image_paths, image_cache=image_cache)
+    # Use multi-worker loading when no cache (PIL images aren't picklable)
+    workers = 0
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
-                            num_workers=0, pin_memory=torch.cuda.is_available())
+                            num_workers=workers, pin_memory=torch.cuda.is_available())
 
     predictions = {}
     processed = 0
