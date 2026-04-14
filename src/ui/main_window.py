@@ -340,6 +340,9 @@ class MainWindow(QMainWindow):
         # Populated dynamically when model is trained
         self._cnn_sort_menu = cnn_sort_menu
         
+        cnn_filter_menu = cnn_menu.addMenu("Filter by Prediction")
+        self._cnn_filter_menu = cnn_filter_menu
+        
         # Confidence cutoff spinbox
         cutoff_widget = QWidget()
         cutoff_layout = QHBoxLayout(cutoff_widget)
@@ -1155,10 +1158,15 @@ class MainWindow(QMainWindow):
         
         # Update the sort-by-confidence submenu with class names
         self._cnn_sort_menu.clear()
+        self._cnn_filter_menu.clear()
         for class_name in class_names:
             action = self._cnn_sort_menu.addAction(class_name)
             action.triggered.connect(
                 lambda checked, cn=class_name: self.cnn_sort_by_confidence(cn)
+            )
+            filter_action = self._cnn_filter_menu.addAction(class_name)
+            filter_action.triggered.connect(
+                lambda checked, cn=class_name: self.cnn_filter_by_prediction(cn)
             )
         
         QMessageBox.information(
@@ -1251,6 +1259,46 @@ class MainWindow(QMainWindow):
                 f"without re-running inference."
             )
     
+    def cnn_filter_by_prediction(self, class_name: str):
+        """Show only images whose predicted class matches class_name."""
+        if self.cnn_prediction is None:
+            prediction = self._cnn_run_inference()
+            if prediction is None:
+                return
+        
+        predictions = self.cnn_prediction.predictions
+        filtered = []
+        for path_str, pred in predictions.items():
+            if pred['predicted_label'] == class_name and pred['confidence'] >= self.confidence_cutoff:
+                filtered.append((Path(path_str), pred['confidence']))
+        
+        # Sort by confidence descending
+        filtered.sort(key=lambda x: x[1], reverse=True)
+        sorted_paths = [path for path, _ in filtered]
+        
+        if not sorted_paths:
+            from PyQt5.QtWidgets import QMessageBox
+            cutoff_text = (
+                f" above {self.confidence_cutoff:.0%} confidence"
+                if self.confidence_cutoff > 0 else ""
+            )
+            QMessageBox.information(
+                self, "No Matches",
+                f"No unlabeled images are predicted as '{class_name}'{cutoff_text}."
+            )
+            return
+        
+        self.custom_sort_order = sorted_paths
+        self.display_images_with_custom_order(sorted_paths)
+        cutoff_text = (
+            f", cutoff={self.confidence_cutoff:.0%}"
+            if self.confidence_cutoff > 0 else ""
+        )
+        self.setWindowTitle(
+            f"Classifier Organizer - Predicted as '{class_name}'{cutoff_text} "
+            f"({len(sorted_paths)} images)"
+        )
+
     def cnn_sort_by_confidence(self, class_name: str):
         """Sort unlabeled images by CNN confidence for a given class."""
         if self.cnn_prediction is None:
@@ -1693,12 +1741,17 @@ class MainWindow(QMainWindow):
                         from src.cnn.trainer import TrainingResult
                         self.cnn_result = TrainingResult.load(cnn_path)
                         self.cnn_model_path = str(cnn_path)
-                        # Populate sort-by-confidence menu
+                        # Populate sort-by-confidence and filter menus
                         self._cnn_sort_menu.clear()
+                        self._cnn_filter_menu.clear()
                         for class_name in self.cnn_result.class_names:
                             action = self._cnn_sort_menu.addAction(class_name)
                             action.triggered.connect(
                                 lambda checked, cn=class_name: self.cnn_sort_by_confidence(cn)
+                            )
+                            filter_action = self._cnn_filter_menu.addAction(class_name)
+                            filter_action.triggered.connect(
+                                lambda checked, cn=class_name: self.cnn_filter_by_prediction(cn)
                             )
                         print(f"DEBUG: Restored CNN model from {cnn_path}")
                     except Exception as e:
