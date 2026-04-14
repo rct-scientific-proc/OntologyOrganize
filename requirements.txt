@@ -1,7 +1,6 @@
 cmcrameri
 matplotlib
 numpy
-patchelf; sys_platform == 'linux'
 pillow
 pyqt5
 scipy

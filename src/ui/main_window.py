@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QFileDialog, QListWidget,
     QListWidgetItem, QSplitter, QPushButton, QScrollArea, QProgressDialog,
-    QWidgetAction, QComboBox
+    QWidgetAction, QComboBox, QDoubleSpinBox
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QWheelEvent
@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         self.cnn_result = None  # Trained CNN model result
         self.cnn_model_path = None  # Path to last saved CNN model
         self.cnn_prediction = None  # Cached inference results
+        self.confidence_cutoff = 0.0  # Minimum confidence for sort-by-confidence display
         self.train_batch_size = 16  # Training batch size
         self.inference_batch_size = 32  # Inference batch size
         self.init_ui()
@@ -338,6 +339,25 @@ class MainWindow(QMainWindow):
         cnn_sort_menu = cnn_menu.addMenu("Sort by Confidence")
         # Populated dynamically when model is trained
         self._cnn_sort_menu = cnn_sort_menu
+        
+        # Confidence cutoff spinbox
+        cutoff_widget = QWidget()
+        cutoff_layout = QHBoxLayout(cutoff_widget)
+        cutoff_layout.setContentsMargins(8, 2, 8, 2)
+        cutoff_layout.addWidget(QLabel("Confidence Cutoff:"))
+        self._confidence_cutoff_spin = QDoubleSpinBox()
+        self._confidence_cutoff_spin.setRange(0.0, 1.0)
+        self._confidence_cutoff_spin.setSingleStep(0.05)
+        self._confidence_cutoff_spin.setDecimals(2)
+        self._confidence_cutoff_spin.setValue(self.confidence_cutoff)
+        self._confidence_cutoff_spin.setToolTip(
+            "Hide images below this confidence when sorting by confidence"
+        )
+        self._confidence_cutoff_spin.valueChanged.connect(self._on_confidence_cutoff_changed)
+        cutoff_layout.addWidget(self._confidence_cutoff_spin)
+        cutoff_action = QWidgetAction(self)
+        cutoff_action.setDefaultWidget(cutoff_widget)
+        cnn_menu.addAction(cutoff_action)
         
         # Create central widget
         central_widget = QWidget()
@@ -1001,6 +1021,12 @@ class MainWindow(QMainWindow):
         
         self.setWindowTitle("Classifier Organizer - Sorted by correlation")
     
+    def _on_confidence_cutoff_changed(self, value):
+        """Update confidence cutoff and re-sort if active."""
+        self.confidence_cutoff = value
+        if hasattr(self, '_cnn_sort_class') and self.cnn_prediction is not None:
+            self.cnn_sort_by_confidence(self._cnn_sort_class)
+
     def _on_train_batch_changed(self, text):
         """Update train batch size from combo box."""
         try:
@@ -1235,13 +1261,19 @@ class MainWindow(QMainWindow):
             )
             return
         
+        self._cnn_sort_class = class_name
         sorted_items = self.cnn_prediction.sort_by_class_confidence(class_name)
-        sorted_paths = [path for path, _ in sorted_items]
+        sorted_paths = [path for path, conf in sorted_items
+                        if conf >= self.confidence_cutoff]
         
         self.custom_sort_order = sorted_paths
         self.display_images_with_custom_order(sorted_paths)
+        cutoff_text = (
+            f", cutoff={self.confidence_cutoff:.0%}"
+            if self.confidence_cutoff > 0 else ""
+        )
         self.setWindowTitle(
-            f"Classifier Organizer - Sorted by CNN confidence ({class_name})"
+            f"Classifier Organizer - Sorted by CNN confidence ({class_name}{cutoff_text})"
         )
     
     def display_images_with_custom_order(self, unlabeled_order: list):

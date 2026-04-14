@@ -12,13 +12,13 @@ from src.utils.image_utils import create_thumbnail
 
 class ClickableImageLabel(QLabel):
     """A clickable label for displaying images."""
-    clicked = pyqtSignal()
+    clicked = pyqtSignal(bool)  # shift_held
     right_clicked = pyqtSignal()
     
     def mousePressEvent(self, event: QMouseEvent):
         """Handle mouse press event."""
         if event.button() == Qt.LeftButton and self.pixmap() and not self.pixmap().isNull():
-            self.clicked.emit()
+            self.clicked.emit(bool(event.modifiers() & Qt.ShiftModifier))
         elif event.button() == Qt.RightButton and self.pixmap() and not self.pixmap().isNull():
             self.right_clicked.emit()
         super().mousePressEvent(event)
@@ -47,6 +47,7 @@ class ImageGridWidget(QWidget):
         self.thread_count = 8  # Number of threads for parallel processing
         self.image_cache = {}  # Cache for preloaded images {path: PIL.Image}
         self.force_grayscale = False  # Whether to force grayscale conversion
+        self._last_clicked_idx = None  # Track last clicked index for shift-select
         self.init_ui()
     
     def init_ui(self):
@@ -67,7 +68,7 @@ class ImageGridWidget(QWidget):
                 
                 # Connect click signal
                 idx = row * self.cols + col
-                label.clicked.connect(lambda i=idx: self.on_image_clicked(i))
+                label.clicked.connect(lambda shift, i=idx: self.on_image_clicked(i, shift))
                 label.right_clicked.connect(lambda i=idx: self.on_image_right_clicked(i))
                 
                 layout.addWidget(label, row, col)
@@ -144,7 +145,7 @@ class ImageGridWidget(QWidget):
                 
                 # Connect click signal
                 idx = row * self.cols + col
-                label.clicked.connect(lambda i=idx: self.on_image_clicked(i))
+                label.clicked.connect(lambda shift, i=idx: self.on_image_clicked(i, shift))
                 label.right_clicked.connect(lambda i=idx: self.on_image_right_clicked(i))
                 
                 layout.addWidget(label, row, col)
@@ -166,6 +167,7 @@ class ImageGridWidget(QWidget):
         """Load images for the specified page using multithreading."""
         self.current_page = page
         self.selected_indices.clear()  # Clear selections when changing pages
+        self._last_clicked_idx = None  # Reset shift-select anchor on page change
         start_idx = page * self.images_per_page
         end_idx = start_idx + self.images_per_page
         
@@ -257,7 +259,7 @@ class ImageGridWidget(QWidget):
             return 0
         return (len(self.all_images) - 1) // self.images_per_page + 1
     
-    def on_image_clicked(self, idx: int):
+    def on_image_clicked(self, idx: int, shift_held: bool = False):
         """Handle image click and get active label from parent."""
         # Check if we're in correlation mode first
         if self.correlation_mode:
@@ -276,7 +278,19 @@ class ImageGridWidget(QWidget):
         if self.main_window and hasattr(self.main_window, 'active_label'):
             active_label = self.main_window.active_label
         print(f"DEBUG: on_image_clicked - active_label from main_window: {active_label}")
-        self.toggle_selection(idx, active_label)
+        
+        if shift_held and self._last_clicked_idx is not None:
+            # Shift-click: select range between last clicked and current
+            lo = min(self._last_clicked_idx, idx)
+            hi = max(self._last_clicked_idx, idx)
+            start_idx = self.current_page * self.images_per_page
+            for i in range(lo, hi + 1):
+                if i not in self.selected_indices and i < len(self.image_labels) and start_idx + i < len(self.all_images):
+                    self.toggle_selection(i, active_label)
+        else:
+            self.toggle_selection(idx, active_label)
+        
+        self._last_clicked_idx = idx
     
     def on_image_right_clicked(self, idx: int):
         """Handle right-click to remove label from image."""
