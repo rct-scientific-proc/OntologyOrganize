@@ -1053,7 +1053,7 @@ class MainWindow(QMainWindow):
         from PyQt5.QtWidgets import QMessageBox, QProgressDialog, QInputDialog
         
         try:
-            from src.cnn.trainer import train_model
+            from src.cnn.workers import TrainingWorker
         except ImportError:
             QMessageBox.warning(
                 self, "PyTorch Not Installed",
@@ -1105,91 +1105,103 @@ class MainWindow(QMainWindow):
         progress.setMinimumDuration(0)
         progress.setValue(0)
         
-        cancelled = False
+        # Get image cache if available
+        image_cache = self.image_grid.image_cache if self.image_grid.image_cache else None
+        
+        # Create and start background worker
+        worker = TrainingWorker(
+            labeled_images=self.labeled_images,
+            class_names=class_names,
+            image_cache=image_cache,
+            epochs=epochs,
+            batch_size=self.train_batch_size,
+            resume_from=self.cnn_result,
+        )
+        # Keep a reference so the thread isn't garbage-collected
+        self._training_worker = worker
         
         def on_progress(epoch, total_epochs, loss, accuracy):
-            nonlocal cancelled
-            if progress.wasCanceled():
-                cancelled = True
-                return False
             progress.setValue(epoch)
             progress.setLabelText(
                 f"Training CNN...\n"
                 f"Epoch {epoch}/{total_epochs}\n"
                 f"Loss: {loss:.4f}  Accuracy: {accuracy:.1%}"
             )
-            # Process events so dialog updates
-            from PyQt5.QtWidgets import QApplication
-            QApplication.processEvents()
-            return True
         
-        # Get image cache if available
-        image_cache = self.image_grid.image_cache if self.image_grid.image_cache else None
+        def on_cancel():
+            worker.cancel()
         
-        # Train
-        result = train_model(
-            labeled_images=self.labeled_images,
-            class_names=class_names,
-            image_cache=image_cache,
-            epochs=epochs,
-            batch_size=self.train_batch_size,
-            progress_callback=on_progress,
-            resume_from=self.cnn_result,
-        )
-        
-        progress.close()
-        
-        if cancelled or result is None:
-            return
-        
-        self.cnn_result = result
-        self.cnn_prediction = None  # Clear cached inference (model changed)
-        
-        # Auto-save model next to the image folder
-        try:
-            current_folder = self.controller.get_current_folder()
-            if current_folder:
-                model_path = Path(current_folder).parent / "cnn_model.pth"
-            else:
-                model_path = Path("cnn_model.pth")
-            self.cnn_model_path = str(result.save(model_path))
-        except Exception as e:
-            print(f"WARNING: Failed to auto-save CNN model: {e}")
-        
-        # Update the sort-by-confidence submenu with class names
-        self._cnn_sort_menu.clear()
-        self._cnn_filter_menu.clear()
-        for class_name in class_names:
-            action = self._cnn_sort_menu.addAction(class_name)
-            action.triggered.connect(
-                lambda checked, cn=class_name: self.cnn_sort_by_confidence(cn)
-            )
-            filter_action = self._cnn_filter_menu.addAction(class_name)
-            filter_action.triggered.connect(
-                lambda checked, cn=class_name: self.cnn_filter_by_prediction(cn)
+        def on_finished(result):
+            progress.close()
+            self._training_worker = None
+            
+            if result is None:
+                return
+            
+            self.cnn_result = result
+            self.cnn_prediction = None  # Clear cached inference (model changed)
+            
+            # Auto-save model next to the image folder
+            try:
+                current_folder = self.controller.get_current_folder()
+                if current_folder:
+                    model_path = Path(current_folder).parent / "cnn_model.pth"
+                else:
+                    model_path = Path("cnn_model.pth")
+                self.cnn_model_path = str(result.save(model_path))
+            except Exception as e:
+                print(f"WARNING: Failed to auto-save CNN model: {e}")
+            
+            # Update the sort-by-confidence submenu with class names
+            self._cnn_sort_menu.clear()
+            self._cnn_filter_menu.clear()
+            for class_name in class_names:
+                action = self._cnn_sort_menu.addAction(class_name)
+                action.triggered.connect(
+                    lambda checked, cn=class_name: self.cnn_sort_by_confidence(cn)
+                )
+                filter_action = self._cnn_filter_menu.addAction(class_name)
+                filter_action.triggered.connect(
+                    lambda checked, cn=class_name: self.cnn_filter_by_prediction(cn)
+                )
+            
+            QMessageBox.information(
+                self, "Training Complete",
+                f"CNN trained successfully!\n\n"
+                f"Final accuracy: {result.train_accuracy:.1%}\n"
+                f"Epochs: {result.epochs}\n"
+                f"Classes: {', '.join(class_names)}\n\n"
+                f"You can now use 'Sort by Confidence' or 'Suggest Labels' from the CNN menu."
             )
         
-        QMessageBox.information(
-            self, "Training Complete",
-            f"CNN trained successfully!\n\n"
-            f"Final accuracy: {result.train_accuracy:.1%}\n"
-            f"Epochs: {result.epochs}\n"
-            f"Classes: {', '.join(class_names)}\n\n"
-            f"You can now use 'Sort by Confidence' or 'Suggest Labels' from the CNN menu."
-        )
+        def on_error(error_msg):
+            progress.close()
+            self._training_worker = None
+            QMessageBox.critical(self, "Training Error", f"CNN training failed:\n{error_msg}")
+        
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        progress.canceled.connect(on_cancel)
+        
+        worker.start()
     
-    def _cnn_run_inference(self):
-        """Run CNN inference on unlabeled images, caching the result."""
+    def _cnn_run_inference(self, on_complete=None):
+        """Run CNN inference on unlabeled images in a background thread.
+
+        Args:
+            on_complete: Optional callback(prediction) called when done.
+                         If None, only caches the result.
+        """
         from PyQt5.QtWidgets import QMessageBox, QProgressDialog
+        from src.cnn.workers import InferenceWorker
         
         if self.cnn_result is None:
             QMessageBox.warning(
                 self, "No Trained Model",
-                "Train a CNN first using CNN → Train on Labeled Images."
+                "Train a CNN first using CNN \u2192 Train on Labeled Images."
             )
-            return None
-        
-        from src.cnn.inference import run_inference
+            return
         
         # Get unlabeled images
         all_images = self.controller.get_images()
@@ -1199,9 +1211,7 @@ class MainWindow(QMainWindow):
         if not unlabeled_images:
             QMessageBox.information(self, "No Unlabeled Images",
                                    "All images are already labeled.")
-            return None
-        
-        batch_size = self.inference_batch_size
+            return
         
         # Create progress dialog
         progress = QProgressDialog("Running CNN inference...", "Cancel",
@@ -1211,93 +1221,102 @@ class MainWindow(QMainWindow):
         progress.setMinimumDuration(0)
         progress.setValue(0)
         
-        cancelled = False
+        image_cache = self.image_grid.image_cache if self.image_grid.image_cache else None
+        
+        worker = InferenceWorker(
+            training_result=self.cnn_result,
+            image_paths=unlabeled_images,
+            image_cache=image_cache,
+            batch_size=self.inference_batch_size,
+        )
+        self._inference_worker = worker
         
         def on_progress(processed, total):
-            nonlocal cancelled
-            if progress.wasCanceled():
-                cancelled = True
-                return False
             progress.setValue(processed)
             progress.setLabelText(
                 f"Running CNN inference...\n"
                 f"Processed {processed}/{total} images"
             )
-            from PyQt5.QtWidgets import QApplication
-            QApplication.processEvents()
-            return True
         
-        image_cache = self.image_grid.image_cache if self.image_grid.image_cache else None
+        def on_cancel():
+            worker.cancel()
         
-        prediction = run_inference(
-            training_result=self.cnn_result,
-            image_paths=unlabeled_images,
-            image_cache=image_cache,
-            batch_size=batch_size,
-            progress_callback=on_progress,
-        )
+        def on_finished(prediction):
+            progress.close()
+            self._inference_worker = None
+            if prediction is not None:
+                self.cnn_prediction = prediction
+            if on_complete is not None:
+                on_complete(prediction)
         
-        progress.close()
+        def on_error(error_msg):
+            progress.close()
+            self._inference_worker = None
+            QMessageBox.critical(self, "Inference Error", f"CNN inference failed:\n{error_msg}")
         
-        if cancelled or prediction is None:
-            return None
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        progress.canceled.connect(on_cancel)
         
-        self.cnn_prediction = prediction
-        return prediction
+        worker.start()
     
     def cnn_run_inference_action(self):
         """Menu action to explicitly run inference and cache results."""
         from PyQt5.QtWidgets import QMessageBox
         
-        prediction = self._cnn_run_inference()
-        if prediction is not None:
-            count = len(prediction.predictions)
-            QMessageBox.information(
-                self, "Inference Complete",
-                f"Inference finished on {count} unlabeled images.\n\n"
-                f"You can now use 'Sort by Confidence' or 'Suggest Labels' "
-                f"without re-running inference."
-            )
+        def on_complete(prediction):
+            if prediction is not None:
+                count = len(prediction.predictions)
+                QMessageBox.information(
+                    self, "Inference Complete",
+                    f"Inference finished on {count} unlabeled images.\n\n"
+                    f"You can now use 'Sort by Confidence' or 'Suggest Labels' "
+                    f"without re-running inference."
+                )
+        
+        self._cnn_run_inference(on_complete=on_complete)
     
     def cnn_filter_by_prediction(self, class_name: str):
         """Show only images whose predicted class matches class_name."""
-        if self.cnn_prediction is None:
-            prediction = self._cnn_run_inference()
-            if prediction is None:
+        def _apply_filter(prediction=None):
+            predictions = self.cnn_prediction.predictions
+            filtered = []
+            for path_str, pred in predictions.items():
+                if pred['predicted_label'] == class_name and pred['confidence'] >= self.confidence_cutoff:
+                    filtered.append((Path(path_str), pred['confidence']))
+            
+            # Sort by confidence descending
+            filtered.sort(key=lambda x: x[1], reverse=True)
+            sorted_paths = [path for path, _ in filtered]
+            
+            if not sorted_paths:
+                from PyQt5.QtWidgets import QMessageBox
+                cutoff_text = (
+                    f" above {self.confidence_cutoff:.0%} confidence"
+                    if self.confidence_cutoff > 0 else ""
+                )
+                QMessageBox.information(
+                    self, "No Matches",
+                    f"No unlabeled images are predicted as '{class_name}'{cutoff_text}."
+                )
                 return
-        
-        predictions = self.cnn_prediction.predictions
-        filtered = []
-        for path_str, pred in predictions.items():
-            if pred['predicted_label'] == class_name and pred['confidence'] >= self.confidence_cutoff:
-                filtered.append((Path(path_str), pred['confidence']))
-        
-        # Sort by confidence descending
-        filtered.sort(key=lambda x: x[1], reverse=True)
-        sorted_paths = [path for path, _ in filtered]
-        
-        if not sorted_paths:
-            from PyQt5.QtWidgets import QMessageBox
+            
+            self.custom_sort_order = sorted_paths
+            self.display_images_with_custom_order(sorted_paths)
             cutoff_text = (
-                f" above {self.confidence_cutoff:.0%} confidence"
+                f", cutoff={self.confidence_cutoff:.0%}"
                 if self.confidence_cutoff > 0 else ""
             )
-            QMessageBox.information(
-                self, "No Matches",
-                f"No unlabeled images are predicted as '{class_name}'{cutoff_text}."
+            self.setWindowTitle(
+                f"Classifier Organizer - Predicted as '{class_name}'{cutoff_text} "
+                f"({len(sorted_paths)} images)"
             )
-            return
         
-        self.custom_sort_order = sorted_paths
-        self.display_images_with_custom_order(sorted_paths)
-        cutoff_text = (
-            f", cutoff={self.confidence_cutoff:.0%}"
-            if self.confidence_cutoff > 0 else ""
-        )
-        self.setWindowTitle(
-            f"Classifier Organizer - Predicted as '{class_name}'{cutoff_text} "
-            f"({len(sorted_paths)} images)"
-        )
+        if self.cnn_prediction is None:
+            self._cnn_run_inference(on_complete=lambda pred: _apply_filter() if pred else None)
+        else:
+            _apply_filter()
 
     def cnn_sort_by_confidence(self, class_name: str):
         """Sort unlabeled images by CNN confidence for a given class."""
